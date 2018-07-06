@@ -9,7 +9,17 @@
     "url": "https://github.com/petele/gpx-split"
   },
   "dependencies": {
+    "chalk": "^2.4.1",
+    "commander": "^2.16.0",
+    "globule": "^1.2.1",
     "moment": "^2.18.1",
     "xml2js": "^0.4.17"
+  },
+  "devDependencies": {
+    "eslint": "^5.0.1",
+    "eslint-config-google": "^0.9.1"
+  },
+    "scripts": {
+    "lint": "eslint split"
   }
 }

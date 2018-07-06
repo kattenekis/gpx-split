@@ -1,0 +1,363 @@
+#!/usr/bin/env node
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const chalk = require('chalk');
+const glob = require('globule');
+const xml2js = require('xml2js');
+const moment = require('moment');
+const xmlParser = new xml2js.Parser();
+const commander = require('commander');
+
+const SOURCE_DIR = 'source/';
+const DEST_DIR = 'result/';
+const MAX_POINTS = 30000;
+const TZ_OFFSET = 0;
+const HDOP_MAX = 5.0;
+
+commander
+  .version('0.2.0')
+  .option('--source <path>', 'Source folder for GPX files', SOURCE_DIR)
+  .option('--dest <path>', 'Destination folder for generated files', DEST_DIR)
+  .option('--max <max>', 'Maximum points per file', MAX_POINTS)
+  .option('--tz_offset <t>', 'Timezone offset', TZ_OFFSET)
+  .option('--hdop_max <value>', 'Max HDOP to include', HDOP_MAX)
+  .option('--prefix <prefix>', 'File prefix to add')
+  .option('--no-filter', 'Disable filter of points')
+  .parse(process.argv);
+
+/**
+ * Gets a list of GPX files in the specified directory.
+ *
+ * @param {String} dir The directory to search for GPX files in.
+ * @return {Array} A list of GPX files in that directory.
+ */
+function getGPXFileList(dir) {
+  const globOpts = {
+    prefixBase: true,
+    srcBase: dir,
+  };
+  return glob.find('*.gpx', globOpts);
+}
+
+/**
+ * Read and parse an array of GPX files, and create a list of points.
+ *
+ * @param {Array} files The list of files to read and parse.
+ * @return {Array} A list of GPS points read from the GPX files.
+ */
+function readGPXFiles(files) {
+  console.log(chalk.bold('Reading source GPX files...'));
+  let points = [];
+  files.forEach((fileName) => {
+    console.log(` Parsing file: ${chalk.cyan(fileName)}`);
+    const gpx = fs.readFileSync(fileName);
+    xmlParser.parseString(gpx, function(err, result) {
+      const pointsInFile = getPoints(result);
+      points = points.concat(pointsInFile);
+    });
+  });
+  console.log(` Found ${chalk.cyan(points.length)} points`);
+  return points;
+}
+
+/**
+ * Gets the points from a parsed GPX file.
+ *
+ * @param {Array} parsedGPX The parsed GPX file to process.
+ * @return {Array} A collection of GPS points.
+ */
+function getPoints(parsedGPX) {
+  const tracks = parsedGPX.gpx.trk;
+  let results = [];
+  tracks.forEach((track) => {
+    const trackSegments = track.trkseg;
+    trackSegments.forEach((segment) => {
+      const points = segment.trkpt;
+      points.forEach((pt) => {
+        const point = {
+          lat: pt.$.lat,
+          lon: pt.$.lon,
+          time: pt.time[0],
+        };
+        if (pt.ele && pt.ele[0]) {
+          point.ele = pt.ele[0];
+        }
+        if (pt.hdop && pt.hdop[0]) {
+          point.hdop = pt.hdop[0];
+        }
+        results.push(point);
+      });
+    });
+  });
+  return results;
+}
+
+/**
+ * Verifies the list of GPS points are sorted.
+ *
+ * @param {Array} points A list of GPS points.
+ * @return {Boolean}
+ */
+function verifySorted(points) {
+  console.log(chalk.bold('Verifying points are sorted...'));
+  let isSorted = true;
+  let lastTime = 0;
+  points.forEach((point) => {
+    let curTime = moment(point.time).valueOf();
+    if (curTime <= lastTime) {
+      isSorted = false;
+    }
+    lastTime = curTime;
+  });
+  if (isSorted === false) {
+    console.log(chalk.red(' Warning, points are not sorted.'));
+  } else {
+    console.log(chalk.green(' OK'));
+  }
+  return isSorted;
+}
+
+/**
+ * Sorts a list of GPS points by time.
+ *
+ * @param {Array} points A list of GPS points.
+ * @return {Array}
+ */
+function sortPoints(points) {
+  /**
+   * Compares two GPS points by time.
+   *
+   * @param {Object} a First GPS point to be compared.
+   * @param {Object} b Second GPS point to be compared.
+   * @return {number}
+   */
+  function comparePoints(a, b) {
+    const aTime = moment(a.time).valueOf();
+    const bTime = moment(b.time).valueOf();
+    return aTime - bTime;
+  }
+  console.log(chalk.bold('Sorting points...'));
+  return points.sort(comparePoints);
+}
+
+/**
+ * Compares two different GPS points to see if the difference between them is
+ * larger than the specified amount.
+ *
+ * @param {number} curLat Current latitude.
+ * @param {number} curLon Current longitude.
+ * @param {number} prevLat Previous latitude.
+ * @param {number} prevLon Previous longitude.
+ * @return {Boolean}
+ */
+function isDiffEnough(curLat, curLon, prevLat, prevLon) {
+  // MIN_DIFF is approximately 1.1m
+  const MIN_DIFF = 0.000010;
+  const diffLat = Math.abs(parseFloat(curLat) - parseFloat(prevLat));
+  const diffLon = Math.abs(parseFloat(curLon) - parseFloat(prevLon));
+  if (diffLat > MIN_DIFF || diffLon > MIN_DIFF) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Filter the list of GPS points and remove any where the difference between
+ * two points isn't enough, or where the HDOP is greater than the value
+ * provided.
+ *
+ * @param {Array} points A list of GPS points.
+ * @param {number} hdopMax Maximum value for the hdop.
+ * @return {Array}
+ */
+function filterPoints(points, hdopMax) {
+  let results = [];
+  let lastLat = Number.MAX_SAFE_INTEGER;
+  let lastLon = Number.MAX_SAFE_INTEGER;
+  console.log(chalk.bold('Filtering points...'));
+  points.forEach((point) => {
+    // Has the GPS point moved enough since the last iteration of the loop
+    const hasMoved = isDiffEnough(point.lat, point.lon, lastLat, lastLon);
+    // Is the HDOP accurate enough
+    const hdop = parseFloat(point.hdop);
+    const hdopOK = (point.hdop && (hdop < hdopMax)) ? true : false;
+    if (hasMoved && hdopOK) {
+      results.push(point);
+      lastLat = point.lat;
+      lastLon = point.lon;
+    }
+  });
+  const after = chalk.cyan(results.length);
+  const before = chalk.cyan(points.length);
+  console.log(` Kept ${after} of ${before}`);
+  return results;
+}
+
+/**
+ * Generate a GPX file for the current list of points.
+ *
+ * @param {Array} points A list of GPS points.
+ * @param {String} fileName The filename to save.
+ */
+function saveGPXFile(points, fileName) {
+  let count = 0;
+  let lines = [];
+  fileName += '.gpx';
+  lines.push('<?xml version="1.0" encoding="UTF-8" standalone="no" ?>');
+  lines.push('<gpx xmlns="http://www.topografix.com/GPX/1/1" version="1.1" creator="petele">');
+  lines.push('  <trk>');
+  lines.push(`    <name>${fileName}</name>`);
+  lines.push('    <trkseg>');
+  points.forEach((point) => {
+    lines.push(`      <trkpt lat="${point.lat}" lon="${point.lon}">`);
+    lines.push(`        <time>${point.time}</time>`);
+    if (point.ele) {
+      lines.push(`        <ele>${point.ele}</ele>`);
+    }
+    if (point.hdop) {
+      lines.push(`        <hdop>${point.hdop}</hdop>`);
+    }
+    lines.push(`      </trkpt>`);
+    count++;
+  });
+  lines.push('    </trkseg>');
+  lines.push('  </trk>');
+  lines.push('</gpx>');
+  console.log(` Saving ${chalk.cyan(count)} points to ${chalk.cyan(fileName)}`);
+  fs.writeFileSync(fileName, lines.join('\n'));
+}
+
+/**
+ * Returns the full filename and path.
+ *
+ * @param {String} dir The directory to write the file to.
+ * @param {String} prefix The prefix to add to the start of the file.
+ * @param {String} filename The filename.
+ * @return {String}
+ */
+function getFilePath(dir, prefix, filename) {
+  if (prefix) {
+    filename = prefix + '-' + filename;
+  }
+  return path.join(dir, filename);
+}
+
+/**
+ * Split a list of points by number of points.
+ *
+ * @param {Array} points A list of GPS points.
+ * @param {number} maxPoints The maximum number of points per file.
+ * @param {String} dir The directory to write the file to.
+ * @param {String} prefix A prefix to add to the filename.
+ */
+function splitBySize(points, maxPoints, dir, prefix) {
+  console.log(chalk.bold('Splitting by size...'));
+  let fileIndex = 1;
+  while (points.length > 0) {
+    let fileName = fileIndex.toString().padStart(2, '0');
+    fileName = getFilePath(dir, prefix, fileName);
+    saveGPXFile(points.splice(0, maxPoints), fileName);
+    fileIndex++;
+  }
+}
+
+/**
+ * Split a list of points by date.
+ *
+ * @param {Array} points A list of GPS points.
+ * @param {number} tzOffset The timezone offset.
+ * @param {String} dir The directory to write the file to.
+ * @param {String} prefix A prefix to add to the filename.
+ */
+function splitByDate(points, tzOffset, dir, prefix) {
+  console.log(chalk.bold(`Splitting by date...`));
+  let dt = moment.utc(points[0].time).add(tzOffset, 'h');
+  let day = dt.format('DD');
+  let fileName = getFilePath(dir, prefix, dt.format('YYYY-MM-DD'));
+  let pointsForDay = [];
+  points.forEach((point) => {
+    dt = moment.utc(point.time).add(tzOffset, 'h');
+    if (day !== dt.format('DD')) {
+      saveGPXFile(pointsForDay, fileName);
+      day = dt.format('DD');
+      fileName = getFilePath(dir, prefix, dt.format('YYYY-MM-DD'));
+      pointsForDay = [];
+    }
+    pointsForDay.push(point);
+  });
+  saveGPXFile(pointsForDay, fileName);
+}
+
+/** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** **
+ *
+ * Main
+ *
+ ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** **/
+
+console.log(chalk.bold('GPX File Splitter'));
+
+if (commander.source !== SOURCE_DIR) {
+  console.log(` Source directory: ${chalk.cyan(commander.source)}`);  
+}
+
+if (commander.dest !== DEST_DIR) {
+  console.log(` Output directory: ${chalk.cyan(commander.dest)}`);
+}
+
+if (commander.prefix) {
+  console.log(` --prefix: ${chalk.cyan(commander.prefix)}`);
+}
+
+if (!commander.filter) {
+  console.log(` --no-filter`);
+}
+
+commander.hdop_max = parseFloat(commander.hdop_max);
+if (commander.hdop_max !== HDOP_MAX) {
+  console.log(` --hdop_max ${chalk.cyan(commander.hdop_max)}`);
+}
+
+commander.max = parseInt(commander.max);
+if (commander.max !== MAX_POINTS) {
+  console.log(` --max ${chalk.cyan(commander.max)}`);
+}
+
+commander.tz_offset = parseInt(commander.tz_offset);
+console.log(` --tz_offset ${chalk.cyan(commander.tz_offset)}`);
+
+// Get the list of files
+const fileList = getGPXFileList(commander.source);
+if (fileList.length === 0) {
+  console.log('No files found, exiting...');
+  process.exit();
+}
+
+// Read all the GPX files and create an array of GPS points, then verify sorted
+let allPoints = readGPXFiles(fileList);
+if (!verifySorted(allPoints)) {
+  allPoints = sortPoints(allPoints);
+}
+
+// Filter points to remove stationary points
+if (commander.filter) {
+  allPoints = filterPoints(allPoints, commander.hdop_max);
+}
+
+// Exit if there are no GPS points remaining.
+if (allPoints.length === 0) {
+  console.log('No GPS points found in files, exiting...');
+  process.exit();
+}
+
+// Create the output directory if it doesn't exist
+if (!fs.existsSync(commander.dest)) {
+  fs.mkdirSync(commander.dest);
+}
+
+// Split GPS points by date
+splitByDate(allPoints, commander.tz_offset, commander.dest, commander.prefix);
+
+// Split GPS points by file size
+splitBySize(allPoints, commander.max, commander.dest, commander.prefix);
