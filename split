@@ -299,7 +299,7 @@ function splitByDate(points, tzOffset, dir, prefix) {
 console.log(chalk.bold('GPX File Splitter'));
 
 if (commander.source !== SOURCE_DIR) {
-  console.log(` Source directory: ${chalk.cyan(commander.source)}`);  
+  console.log(` Source directory: ${chalk.cyan(commander.source)}`);
 }
 
 if (commander.dest !== DEST_DIR) {
