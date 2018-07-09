@@ -10,11 +10,19 @@ const moment = require('moment');
 const xmlParser = new xml2js.Parser();
 const commander = require('commander');
 
+/** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** **
+ * Default settings
+ ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** **/
+
 const SOURCE_DIR = 'source/';
 const DEST_DIR = 'result/';
 const MAX_POINTS = 30000;
 const TZ_OFFSET = 0;
 const HDOP_MAX = 5.0;
+
+/** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** **
+ * Commander Setup
+ ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** **/
 
 commander
   .version('0.2.0')
@@ -26,6 +34,10 @@ commander
   .option('--prefix <prefix>', 'File prefix to add')
   .option('--no-filter', 'Disable filter of points')
   .parse(process.argv);
+
+/** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** **
+ * Read & parse GPX files
+ ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** **/
 
 /**
  * Gets a list of GPX files in the specified directory.
@@ -94,6 +106,10 @@ function getPoints(parsedGPX) {
   return results;
 }
 
+/** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** **
+ * Verify points are sorted & sort points
+ ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** **/
+
 /**
  * Verifies the list of GPS points are sorted.
  *
@@ -142,6 +158,10 @@ function sortPoints(points) {
   return points.sort(comparePoints);
 }
 
+/** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** **
+ * Filter Points by distance or HDOP
+ ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** **/
+
 /**
  * Compares two different GPS points to see if the difference between them is
  * larger than the specified amount.
@@ -167,6 +187,8 @@ function isDiffEnough(curLat, curLon, prevLat, prevLon) {
  * Filter the list of GPS points and remove any where the difference between
  * two points isn't enough, or where the HDOP is greater than the value
  * provided.
+ *
+ * @see https://en.m.wikipedia.org/wiki/Dilution_of_precision_(navigation)#Meaning_of_DOP_Values
  *
  * @param {Array} points A list of GPS points.
  * @param {number} hdopMax Maximum value for the hdop.
@@ -195,6 +217,16 @@ function filterPoints(points, hdopMax) {
   return results;
 }
 
+/** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** **
+ * Save a list of points as a GPX file
+ ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** **/
+
+const XML_TAG = '<?xml version="1.0" encoding="UTF-8" standalone="no" ?>';
+const GPX_XMLNS = `xmlns="http://www.topografix.com/GPX/1/1"`;
+const GPX_VERSION = `version="1.1"`;
+const GPX_CREATOR = `creator="https://github.com/petele/gpx-split"`;
+const GPX_TAG = `<gpx ${GPX_XMLNS} ${GPX_VERSION} ${GPX_CREATOR}>`;
+
 /**
  * Generate a GPX file for the current list of points.
  *
@@ -205,11 +237,11 @@ function saveGPXFile(points, fileName) {
   let count = 0;
   let lines = [];
   fileName += '.gpx';
-  lines.push('<?xml version="1.0" encoding="UTF-8" standalone="no" ?>');
-  lines.push('<gpx xmlns="http://www.topografix.com/GPX/1/1" version="1.1" creator="petele">');
-  lines.push('  <trk>');
+  lines.push(XML_TAG);
+  lines.push(GPX_TAG);
+  lines.push(`  <trk>`);
   lines.push(`    <name>${fileName}</name>`);
-  lines.push('    <trkseg>');
+  lines.push(`    <trkseg>`);
   points.forEach((point) => {
     lines.push(`      <trkpt lat="${point.lat}" lon="${point.lon}">`);
     lines.push(`        <time>${point.time}</time>`);
@@ -222,9 +254,9 @@ function saveGPXFile(points, fileName) {
     lines.push(`      </trkpt>`);
     count++;
   });
-  lines.push('    </trkseg>');
-  lines.push('  </trk>');
-  lines.push('</gpx>');
+  lines.push(`    </trkseg>`);
+  lines.push(`  </trk>`);
+  lines.push(`</gpx>`);
   console.log(` Saving ${chalk.cyan(count)} points to ${chalk.cyan(fileName)}`);
   fs.writeFileSync(fileName, lines.join('\n'));
 }
@@ -243,6 +275,10 @@ function getFilePath(dir, prefix, filename) {
   }
   return path.join(dir, filename);
 }
+
+/** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** **
+ * Splitting functions
+ ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** **/
 
 /**
  * Split a list of points by number of points.
@@ -291,23 +327,21 @@ function splitByDate(points, tzOffset, dir, prefix) {
 }
 
 /** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** **
- *
  * Main
- *
  ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** **/
 
 console.log(chalk.bold('GPX File Splitter'));
 
 if (commander.source !== SOURCE_DIR) {
-  console.log(` Source directory: ${chalk.cyan(commander.source)}`);
+  console.log(` --source=${chalk.cyan(commander.source)}`);
 }
 
 if (commander.dest !== DEST_DIR) {
-  console.log(` Output directory: ${chalk.cyan(commander.dest)}`);
+  console.log(` --dest=${chalk.cyan(commander.dest)}`);
 }
 
 if (commander.prefix) {
-  console.log(` --prefix: ${chalk.cyan(commander.prefix)}`);
+  console.log(` --prefix=${chalk.cyan(commander.prefix)}`);
 }
 
 if (!commander.filter) {
@@ -316,16 +350,24 @@ if (!commander.filter) {
 
 commander.hdop_max = parseFloat(commander.hdop_max);
 if (commander.hdop_max !== HDOP_MAX) {
-  console.log(` --hdop_max ${chalk.cyan(commander.hdop_max)}`);
+  console.log(` --hdop_max=${chalk.cyan(commander.hdop_max)}`);
 }
 
 commander.max = parseInt(commander.max);
 if (commander.max !== MAX_POINTS) {
-  console.log(` --max ${chalk.cyan(commander.max)}`);
+  console.log(` --max=${chalk.cyan(commander.max)}`);
 }
 
 commander.tz_offset = parseInt(commander.tz_offset);
-console.log(` --tz_offset ${chalk.cyan(commander.tz_offset)}`);
+if (commander.tz_offset === 0) {
+  const warn = chalk.bold.red('WARNING:');
+  const tzOff = chalk.cyan('--tz_offset');
+  const sure = chalk.bold('Are you sure?');
+  console.log(` ${warn} ${tzOff} is ${chalk.yellow('0')}. ${sure}`);
+} else {
+  console.log(` --tz_offset=${chalk.cyan(commander.tz_offset)}`);
+}
+
 
 // Get the list of files
 const fileList = getGPXFileList(commander.source);
