@@ -10,6 +10,8 @@ const moment = require('moment');
 const xmlParser = new xml2js.Parser();
 const commander = require('commander');
 
+const TO_RAD = Math.PI / 180.0;
+
 /** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** **
  * Default settings
  ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** **/
@@ -18,6 +20,7 @@ const SOURCE_DIR = 'source/';
 const DEST_DIR = 'result/';
 const MAX_POINTS = 30000;
 const TZ_OFFSET = 0;
+const MIN_MOVE = 1.25;
 const HDOP_MAX = 5.0;
 
 /** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** **
@@ -28,9 +31,10 @@ commander
   .version('0.2.0')
   .option('--source <path>', 'Source folder for GPX files', SOURCE_DIR)
   .option('--dest <path>', 'Destination folder for generated files', DEST_DIR)
-  .option('--max <max>', 'Maximum points per file', MAX_POINTS)
-  .option('--tz_offset <t>', 'Timezone offset', TZ_OFFSET)
-  .option('--hdop_max <value>', 'Max HDOP to include', HDOP_MAX)
+  .option('--max <value>', 'Maximum points per file', MAX_POINTS)
+  .option('--tz-offset <value>', 'Timezone offset', TZ_OFFSET)
+  .option('--hdop-max <value>', 'Max HDOP to include', HDOP_MAX)
+  .option('--min-move <value>', 'Minimum movement between points (m)', MIN_MOVE)
   .option('--prefix <prefix>', 'File prefix to add')
   .option('--no-filter', 'Disable filter of points')
   .parse(process.argv);
@@ -163,24 +167,32 @@ function sortPoints(points) {
  ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** **/
 
 /**
- * Compares two different GPS points to see if the difference between them is
- * larger than the specified amount.
+ * Calculates the distance between two GPS points
  *
- * @param {number} curLat Current latitude.
- * @param {number} curLon Current longitude.
- * @param {number} prevLat Previous latitude.
- * @param {number} prevLon Previous longitude.
- * @return {Boolean}
+ * @see: https://en.wikipedia.org/wiki/Haversine_formula
+ *
+ * @param {number} lat1 Current latitude.
+ * @param {number} lon1 Current longitude.
+ * @param {number} lat2 Previous latitude.
+ * @param {number} lon2 Previous longitude.
+ * @return {number} distance (in meters) between the two points
  */
-function isDiffEnough(curLat, curLon, prevLat, prevLon) {
-  // MIN_DIFF is approximately 1.1m
-  const MIN_DIFF = 0.000010;
-  const diffLat = Math.abs(parseFloat(curLat) - parseFloat(prevLat));
-  const diffLon = Math.abs(parseFloat(curLon) - parseFloat(prevLon));
-  if (diffLat > MIN_DIFF || diffLon > MIN_DIFF) {
-    return true;
-  }
-  return false;
+function distBetween(lat1, lon1, lat2, lon2) {
+  // Convert lat/lon to Radians
+  const radLat1 = lat1 * TO_RAD;
+  const radLon1 = lon1 * TO_RAD;
+  const radLat2 = lat2 * TO_RAD;
+  const radLon2 = lon2 * TO_RAD;
+  // Calculate the delta Lat/Lon
+  const deltaLat = radLat2 - radLat1;
+  const deltaLon = radLon2 - radLon1;
+  // Calculate the inner value
+  const a = Math.pow(Math.sin(deltaLat / 2), 2) +
+            Math.cos(radLat1) *
+            Math.cos(radLat2) *
+            Math.pow(Math.sin(deltaLon / 2), 2);
+  const d = 2 * 6370000 * Math.asin(Math.sqrt(a));
+  return d;
 }
 
 /**
@@ -191,21 +203,25 @@ function isDiffEnough(curLat, curLon, prevLat, prevLon) {
  * @see https://en.m.wikipedia.org/wiki/Dilution_of_precision_(navigation)#Meaning_of_DOP_Values
  *
  * @param {Array} points A list of GPS points.
+ * @param {number} minMove Minimum distance moved between points
  * @param {number} hdopMax Maximum value for the hdop.
  * @return {Array}
  */
-function filterPoints(points, hdopMax) {
+function filterPoints(points, minMove, hdopMax) {
   let results = [];
   let lastLat = Number.MAX_SAFE_INTEGER;
   let lastLon = Number.MAX_SAFE_INTEGER;
   console.log(chalk.bold('Filtering points...'));
   points.forEach((point) => {
-    // Has the GPS point moved enough since the last iteration of the loop
-    const hasMoved = isDiffEnough(point.lat, point.lon, lastLat, lastLon);
+    // Calculate the distance between the current GPS point and the previous
+    const dist = distBetween(point.lat, point.lon, lastLat, lastLon);
+    const moveOK = dist >= minMove;
     // Is the HDOP accurate enough
-    const hdop = parseFloat(point.hdop);
-    const hdopOK = (point.hdop && (hdop < hdopMax)) ? true : false;
-    if (hasMoved && hdopOK) {
+    let hdopOK = true;
+    if (point.hdop) {
+      hdopOK = parseFloat(point.hdop) <= hdopMax;
+    }
+    if (moveOK && hdopOK) {
       results.push(point);
       lastLat = point.lat;
       lastLon = point.lon;
@@ -348,9 +364,14 @@ if (!commander.filter) {
   console.log(` --no-filter`);
 }
 
-commander.hdop_max = parseFloat(commander.hdop_max);
-if (commander.hdop_max !== HDOP_MAX) {
-  console.log(` --hdop_max=${chalk.cyan(commander.hdop_max)}`);
+commander.hdopMax = parseFloat(commander.hdopMax);
+if (commander.hdopMax !== HDOP_MAX) {
+  console.log(` --hdop-max=${chalk.cyan(commander.hdopMax)}`);
+}
+
+commander.minMove = parseFloat(commander.minMove);
+if (commander.minMove !== MIN_MOVE) {
+  console.log(` --min-move=${chalk.cyan(commander.minMove)}`);
 }
 
 commander.max = parseInt(commander.max);
@@ -358,14 +379,14 @@ if (commander.max !== MAX_POINTS) {
   console.log(` --max=${chalk.cyan(commander.max)}`);
 }
 
-commander.tz_offset = parseInt(commander.tz_offset);
-if (commander.tz_offset === 0) {
+commander.tzOffset = parseInt(commander.tzOffset);
+if (commander.tzOffset === 0) {
   const warn = chalk.bold.red('WARNING:');
-  const tzOff = chalk.cyan('--tz_offset');
+  const tzOff = chalk.cyan('--tz-offset');
   const sure = chalk.bold('Are you sure?');
   console.log(` ${warn} ${tzOff} is ${chalk.yellow('0')}. ${sure}`);
 } else {
-  console.log(` --tz_offset=${chalk.cyan(commander.tz_offset)}`);
+  console.log(` --tz_offset=${chalk.cyan(commander.tzOffset)}`);
 }
 
 
@@ -384,7 +405,7 @@ if (!verifySorted(allPoints)) {
 
 // Filter points to remove stationary points
 if (commander.filter) {
-  allPoints = filterPoints(allPoints, commander.hdop_max);
+  allPoints = filterPoints(allPoints, commander.minMove, commander.hdopMax);
 }
 
 // Exit if there are no GPS points remaining.
@@ -399,7 +420,7 @@ if (!fs.existsSync(commander.dest)) {
 }
 
 // Split GPS points by date
-splitByDate(allPoints, commander.tz_offset, commander.dest, commander.prefix);
+splitByDate(allPoints, commander.tzOffset, commander.dest, commander.prefix);
 
 // Split GPS points by file size
 splitBySize(allPoints, commander.max, commander.dest, commander.prefix);
