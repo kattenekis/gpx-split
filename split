@@ -37,6 +37,7 @@ commander
   .option('--min-move <value>', 'Minimum movement between points (m)', MIN_MOVE)
   .option('--prefix <prefix>', 'File prefix to add')
   .option('--no-filter', 'Disable filter of points')
+  .option('--drop-unsorted', 'Drop unsorted points instead of deleting them')
   .parse(process.argv);
 
 /** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** **
@@ -126,8 +127,10 @@ function verifySorted(points) {
   let lastTime = 0;
   points.forEach((point) => {
     let curTime = moment(point.time).valueOf();
-    if (curTime <= lastTime) {
+    if (curTime < lastTime) {
       isSorted = false;
+      point.unsorted = true;
+      return;
     }
     lastTime = curTime;
   });
@@ -205,27 +208,36 @@ function distBetween(lat1, lon1, lat2, lon2) {
  * @param {Array} points A list of GPS points.
  * @param {number} minMove Minimum distance moved between points
  * @param {number} hdopMax Maximum value for the hdop.
+ * @param {boolean} dropUnsorted Drops unsorted points from the list
  * @return {Array}
  */
-function filterPoints(points, minMove, hdopMax) {
+function filterPoints(points, minMove, hdopMax, dropUnsorted) {
   let results = [];
   let lastLat = Number.MAX_SAFE_INTEGER;
   let lastLon = Number.MAX_SAFE_INTEGER;
   console.log(chalk.bold('Filtering points...'));
   points.forEach((point) => {
+    // If we're dropping unsorted points, drop this point
+    if (point.unsorted && dropUnsorted) {
+      return;
+    }
+
     // Calculate the distance between the current GPS point and the previous
     const dist = distBetween(point.lat, point.lon, lastLat, lastLon);
-    const moveOK = dist >= minMove;
-    // Is the HDOP accurate enough
-    let hdopOK = true;
-    if (point.hdop) {
-      hdopOK = parseFloat(point.hdop) <= hdopMax;
+    // If distance isn't enough, drop this point
+    if (dist < minMove) {
+      return;
     }
-    if (moveOK && hdopOK) {
-      results.push(point);
-      lastLat = point.lat;
-      lastLon = point.lon;
+
+    // Is the HDOP accurate enough, otherwise drop the point
+    if (point.hdop && parseFloat(point.hdop) > hdopMax) {
+      return;
     }
+
+    // All good - save the point
+    results.push(point);
+    lastLat = point.lat;
+    lastLon = point.lon;
   });
   const after = chalk.cyan(results.length);
   const before = chalk.cyan(points.length);
@@ -364,6 +376,10 @@ if (!commander.filter) {
   console.log(` --no-filter`);
 }
 
+if (commander.dropUnsorted) {
+  console.log(` --drop-unsorted`);
+}
+
 commander.hdopMax = parseFloat(commander.hdopMax);
 if (commander.hdopMax !== HDOP_MAX) {
   console.log(` --hdop-max=${chalk.cyan(commander.hdopMax)}`);
@@ -399,13 +415,16 @@ if (fileList.length === 0) {
 
 // Read all the GPX files and create an array of GPS points, then verify sorted
 let allPoints = readGPXFiles(fileList);
-if (!verifySorted(allPoints)) {
+if (!verifySorted(allPoints) && !commander.dropUnsorted) {
   allPoints = sortPoints(allPoints);
 }
 
 // Filter points to remove stationary points
 if (commander.filter) {
-  allPoints = filterPoints(allPoints, commander.minMove, commander.hdopMax);
+  const minMove = commander.minMove;
+  const hdopMax = commander.hdopMax;
+  const dropUnsorted = commander.dropUnsorted;
+  allPoints = filterPoints(allPoints, minMove, hdopMax, dropUnsorted);
 }
 
 // Exit if there are no GPS points remaining.
