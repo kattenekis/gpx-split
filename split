@@ -48,14 +48,14 @@ commander
  * Gets a list of GPX files in the specified directory.
  *
  * @param {String} dir The directory to search for GPX files in.
- * @return {Array} A list of GPX files in that directory.
+ * @return {Array} A sorted list of GPX files in directory.
  */
 function getGPXFileList(dir) {
   const globOpts = {
     prefixBase: true,
     srcBase: dir,
   };
-  return glob.find('*.gpx', globOpts);
+  return glob.find('*.gpx', globOpts).sort();
 }
 
 /**
@@ -65,7 +65,6 @@ function getGPXFileList(dir) {
  * @return {Array} A list of GPS points read from the GPX files.
  */
 function readGPXFiles(files) {
-  console.log(chalk.bold('Reading source GPX files...'));
   let points = [];
   files.forEach((fileName) => {
     console.log(` Parsing file: ${chalk.cyan(fileName)}`);
@@ -75,7 +74,6 @@ function readGPXFiles(files) {
       points = points.concat(pointsInFile);
     });
   });
-  console.log(` Found ${chalk.cyan(points.length)} points`);
   return points;
 }
 
@@ -122,7 +120,6 @@ function getPoints(parsedGPX) {
  * @return {Boolean}
  */
 function verifySorted(points) {
-  console.log(chalk.bold('Verifying points are sorted...'));
   let isSorted = true;
   let lastTime = 0;
   points.forEach((point) => {
@@ -134,11 +131,6 @@ function verifySorted(points) {
     }
     lastTime = curTime;
   });
-  if (isSorted === false) {
-    console.log(chalk.red(' Warning, points are not sorted.'));
-  } else {
-    console.log(chalk.green(' OK'));
-  }
   return isSorted;
 }
 
@@ -161,7 +153,6 @@ function sortPoints(points) {
     const bTime = moment(b.time).valueOf();
     return aTime - bTime;
   }
-  console.log(chalk.bold('Sorting points...'));
   return points.sort(comparePoints);
 }
 
@@ -215,7 +206,6 @@ function filterPoints(points, minMove, hdopMax, dropUnsorted) {
   let results = [];
   let lastLat = Number.MAX_SAFE_INTEGER;
   let lastLon = Number.MAX_SAFE_INTEGER;
-  console.log(chalk.bold('Filtering points...'));
   points.forEach((point) => {
     // If we're dropping unsorted points, drop this point
     if (point.unsorted && dropUnsorted) {
@@ -223,9 +213,7 @@ function filterPoints(points, minMove, hdopMax, dropUnsorted) {
     }
 
     // Calculate the distance between the current GPS point and the previous
-    const dist = distBetween(point.lat, point.lon, lastLat, lastLon);
-    // If distance isn't enough, drop this point
-    if (dist < minMove) {
+    if (distBetween(point.lat, point.lon, lastLat, lastLon) < minMove) {
       return;
     }
 
@@ -239,9 +227,6 @@ function filterPoints(points, minMove, hdopMax, dropUnsorted) {
     lastLat = point.lat;
     lastLon = point.lon;
   });
-  const after = chalk.cyan(results.length);
-  const before = chalk.cyan(points.length);
-  console.log(` Kept ${after} of ${before}`);
   return results;
 }
 
@@ -317,7 +302,6 @@ function getFilePath(dir, prefix, filename) {
  * @param {String} prefix A prefix to add to the filename.
  */
 function splitBySize(points, maxPoints, dir, prefix) {
-  console.log(chalk.bold('Splitting by size...'));
   let fileIndex = 1;
   while (points.length > 0) {
     let fileName = fileIndex.toString().padStart(2, '0');
@@ -336,7 +320,6 @@ function splitBySize(points, maxPoints, dir, prefix) {
  * @param {String} prefix A prefix to add to the filename.
  */
 function splitByDate(points, tzOffset, dir, prefix) {
-  console.log(chalk.bold(`Splitting by date...`));
   let dt = moment.utc(points[0].time).add(tzOffset, 'h');
   let day = dt.format('DD');
   let fileName = getFilePath(dir, prefix, dt.format('YYYY-MM-DD'));
@@ -405,7 +388,6 @@ if (commander.tzOffset === 0) {
   console.log(` --tz_offset=${chalk.cyan(commander.tzOffset)}`);
 }
 
-
 // Get the list of files
 const fileList = getGPXFileList(commander.source);
 if (fileList.length === 0) {
@@ -413,18 +395,36 @@ if (fileList.length === 0) {
   process.exit();
 }
 
-// Read all the GPX files and create an array of GPS points, then verify sorted
+// Read all the GPX files and create an array of GPS points
+console.log(chalk.bold('Reading source GPX files...'));
 let allPoints = readGPXFiles(fileList);
-if (!verifySorted(allPoints) && !commander.dropUnsorted) {
-  allPoints = sortPoints(allPoints);
+const numPoints = allPoints.length;
+console.log(` Found ${chalk.cyan(numPoints)} points`);
+
+// Check if the list is sorted
+console.log(chalk.bold('Verifying points are sorted...'));
+const isSorted = verifySorted(allPoints);
+
+// Sort the list if necessary
+if (!isSorted) {
+  console.log(chalk.yellow(' Warning:'), 'points are not sorted.');
+  if (commander.dropUnsorted) {
+    console.log(' Unsorted points will be dropped.');
+  } else {
+    console.log(chalk.bold('Sorting points...'));
+    allPoints = sortPoints(allPoints);
+  }
 }
 
 // Filter points to remove stationary points
 if (commander.filter) {
+  console.log(chalk.bold('Filtering points...'));
   const minMove = commander.minMove;
   const hdopMax = commander.hdopMax;
   const dropUnsorted = commander.dropUnsorted;
   allPoints = filterPoints(allPoints, minMove, hdopMax, dropUnsorted);
+  const after = chalk.cyan(allPoints.length);
+  console.log(` Kept ${after} of ${chalk.cyan(numPoints)} points`);
 }
 
 // Exit if there are no GPS points remaining.
@@ -439,7 +439,9 @@ if (!fs.existsSync(commander.dest)) {
 }
 
 // Split GPS points by date
+console.log(chalk.bold(`Splitting by date...`));
 splitByDate(allPoints, commander.tzOffset, commander.dest, commander.prefix);
 
 // Split GPS points by file size
+console.log(chalk.bold('Splitting by size...'));
 splitBySize(allPoints, commander.max, commander.dest, commander.prefix);
